@@ -41,6 +41,7 @@ describe('provider registry', () => {
   it('codex tool display names are normalized', () => {
     const codex = providers.find(p => p.name === 'codex')!
     expect(codex.toolDisplayName('exec_command')).toBe('Bash')
+    expect(codex.toolDisplayName('shell_command')).toBe('Bash')
     expect(codex.toolDisplayName('read_file')).toBe('Read')
     expect(codex.toolDisplayName('write_file')).toBe('Edit')
     expect(codex.toolDisplayName('spawn_agent')).toBe('Agent')

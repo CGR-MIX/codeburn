@@ -38,7 +38,7 @@ npx codeburn
 ### Requirements
 
 - Node.js 20+
-- Claude Code (`~/.claude/projects/`), Codex (`~/.codex/sessions/`), Cursor, OpenCode, and/or Pi (`~/.pi/agent/sessions/`)
+- Claude Code (`~/.claude/projects/`), Codex CLI/App (`~/.codex/sessions/` and `~/.codex/archived_sessions/`), Cursor, OpenCode, and/or Pi (`~/.pi/agent/sessions/`)
 - For Cursor/OpenCode support: `better-sqlite3` is installed automatically as an optional dependency
 
 ## Usage
@@ -55,7 +55,7 @@ codeburn export             # CSV with today, 7 days, 30 days
 codeburn export -f json     # JSON export
 ```
 
-Arrow keys switch between Today / 7 Days / 30 Days / Month. Press `q` to quit, `1` `2` `3` `4` as shortcuts.
+Arrow keys switch between Today / 7 Days / 30 Days / Month. Press `r` to refresh, `q` to quit, `1` `2` `3` `4` as shortcuts.
 
 ## Providers
 
@@ -80,13 +80,13 @@ The `--provider` flag works on all commands: `report`, `today`, `month`, `status
 |----------|--------------|--------|
 | Claude Code | `~/.claude/projects/` | Supported |
 | Claude Desktop | `~/Library/Application Support/Claude/local-agent-mode-sessions/` | Supported |
-| Codex (OpenAI) | `~/.codex/sessions/` | Supported |
+| Codex CLI/App (OpenAI) | `~/.codex/sessions/`, `~/.codex/archived_sessions/` | Supported |
 | Cursor | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | Supported |
 | OpenCode | `~/.local/share/opencode/` (SQLite) | Supported |
 | Pi | `~/.pi/agent/sessions/` | Supported |
 | Amp | -- | Planned (provider plugin system) |
 
-Codex tool names are normalized to match Claude's conventions (`exec_command` shows as `Bash`, `read_file` as `Read`, etc.) so the activity classifier and tool breakdown work across providers.
+Codex tool names are normalized to match Claude's conventions (`exec_command` and `shell_command` show as `Bash`, `read_file` as `Read`, etc.) so the activity classifier and tool breakdown work across providers.
 
 Cursor reads token usage from its local SQLite database. Since Cursor's "Auto" mode hides the actual model used, costs are estimated using Sonnet pricing (labeled "Auto (Sonnet est.)" in the dashboard). The Cursor view shows a **Languages** panel (extracted from code blocks) instead of Core Tools/Shell/MCP panels, since Cursor does not log individual tool calls. First run on a large Cursor database may take up to a minute; results are cached and subsequent runs are instant.
 
@@ -170,7 +170,7 @@ These are starting points, not verdicts. A 60% cache hit on a single experimenta
 
 **Claude Code** stores session transcripts as JSONL at `~/.claude/projects/<sanitized-path>/<session-id>.jsonl`. Each assistant entry contains model name, token usage (input, output, cache read, cache write), tool_use blocks, and timestamps.
 
-**Codex** stores sessions at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` with `token_count` events containing per-call and cumulative token usage, and `function_call` entries for tool tracking.
+**Codex** stores sessions at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Codex App can also move sessions to `~/.codex/archived_sessions/rollout-*.jsonl`. CodeBurn reads both locations, using `token_count` events for per-call and cumulative token usage and `function_call` entries for tool tracking.
 
 **Cursor** stores session data in a SQLite database at `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (macOS), `~/.config/Cursor/User/globalStorage/state.vscdb` (Linux), or `%APPDATA%/Cursor/User/globalStorage/state.vscdb` (Windows). Token counts are in `cursorDiskKV` table entries with `bubbleId:` key prefix. Requires `better-sqlite3` (installed as optional dependency). Parsed results are cached at `~/.cache/codeburn/cursor-results.json` and auto-invalidate when the database changes.
 

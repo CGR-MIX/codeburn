@@ -462,10 +462,10 @@ function cachePut(key: string, data: ProjectSummary[]) {
   sessionCache.set(key, { data, ts: now })
 }
 
-export async function parseAllSessions(dateRange?: DateRange, providerFilter?: string): Promise<ProjectSummary[]> {
+export async function parseAllSessions(dateRange?: DateRange, providerFilter?: string, forceRefresh = false): Promise<ProjectSummary[]> {
   const key = cacheKey(dateRange, providerFilter)
   const cached = sessionCache.get(key)
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
+  if (!forceRefresh && cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
 
   const seenMsgIds = new Set<string>()
   const seenKeys = new Set<string>()
