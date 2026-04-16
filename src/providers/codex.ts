@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { basename, join } from 'path'
 import { homedir } from 'os'
 
+import { extractBashCommands } from '../bash-utils.js'
 import { calculateCost } from '../models.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
@@ -16,6 +17,7 @@ const modelDisplayNames: Record<string, string> = {
 
 const toolNameMap: Record<string, string> = {
   exec_command: 'Bash',
+  shell_command: 'Bash',
   read_file: 'Read',
   write_file: 'Edit',
   apply_diff: 'Edit',
@@ -35,9 +37,11 @@ type CodexEntry = {
     cwd?: string
     model_provider?: string
     originator?: string
+    id?: string
     session_id?: string
     model?: string
     name?: string
+    arguments?: string | Record<string, unknown>
     content?: Array<{ type?: string; text?: string }>
     info?: {
       model?: string
@@ -61,7 +65,7 @@ function getCodexDir(override?: string): string {
 }
 
 function sanitizeProject(cwd: string): string {
-  return cwd.replace(/^\//, '').replace(/\//g, '-')
+  return cwd.replace(/^[A-Za-z]:[\\/]/, '').replace(/^[/\\]/, '').replace(/[\\/]/g, '-')
 }
 
 async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
@@ -84,16 +88,35 @@ async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; 
   return { valid, meta: valid ? entry : undefined }
 }
 
+async function addSessionSource(filePath: string, sources: SessionSource[], seenSessionKeys: Set<string>) {
+  const s = await stat(filePath).catch(() => null)
+  if (!s?.isFile()) return
+
+  const { valid, meta } = await isValidCodexSession(filePath)
+  if (!valid || !meta) return
+
+  const sessionKey = meta.payload?.session_id ?? meta.payload?.id ?? filePath
+  if (seenSessionKeys.has(sessionKey)) return
+  seenSessionKeys.add(sessionKey)
+
+  const cwd = meta.payload?.cwd ?? 'unknown'
+  sources.push({ path: filePath, project: sanitizeProject(cwd), provider: 'codex' })
+}
+
+async function discoverFlatSessionDir(dir: string, sources: SessionSource[], seenSessionKeys: Set<string>) {
+  const files = await readdir(dir).catch(() => [] as string[])
+  for (const file of files) {
+    if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
+    await addSessionSource(join(dir, file), sources, seenSessionKeys)
+  }
+}
+
 async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]> {
   const sessionsDir = join(codexDir, 'sessions')
   const sources: SessionSource[] = []
+  const seenSessionKeys = new Set<string>()
 
-  let years: string[]
-  try {
-    years = await readdir(sessionsDir)
-  } catch {
-    return sources
-  }
+  const years = await readdir(sessionsDir).catch(() => [] as string[])
 
   for (const year of years) {
     if (!/^\d{4}$/.test(year)) continue
@@ -113,18 +136,13 @@ async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]>
         for (const file of files) {
           if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
           const filePath = join(dayDir, file)
-          const s = await stat(filePath).catch(() => null)
-          if (!s?.isFile()) continue
-
-          const { valid, meta } = await isValidCodexSession(filePath)
-          if (!valid || !meta) continue
-
-          const cwd = meta.payload?.cwd ?? 'unknown'
-          sources.push({ path: filePath, project: sanitizeProject(cwd), provider: 'codex' })
+          await addSessionSource(filePath, sources, seenSessionKeys)
         }
       }
     }
   }
+
+  await discoverFlatSessionDir(join(codexDir, 'archived_sessions'), sources, seenSessionKeys)
 
   return sources
 }
@@ -134,6 +152,26 @@ function resolveModel(info: CodexEntry['payload'], sessionModel?: string): strin
     ?? info?.info?.model_name
     ?? sessionModel
     ?? 'gpt-5'
+}
+
+function parseFunctionArguments(args: string | Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!args) return null
+  if (typeof args !== 'string') return args
+
+  try {
+    const parsed = JSON.parse(args) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function extractShellCommands(payload: CodexEntry['payload']): string[] {
+  const args = parseFunctionArguments(payload?.arguments)
+  const command = args?.command
+  return typeof command === 'string' ? extractBashCommands(command) : []
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -155,6 +193,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       let prevOutput = 0
       let prevReasoning = 0
       let pendingTools: string[] = []
+      let pendingBashCommands: string[] = []
       let pendingUserMessage = ''
 
       for (const line of lines) {
@@ -166,7 +205,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         }
 
         if (entry.type === 'session_meta') {
-          sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
+          sessionId = entry.payload?.session_id ?? entry.payload?.id ?? basename(source.path, '.jsonl')
           sessionModel = entry.payload?.model
           continue
         }
@@ -174,6 +213,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
           const rawName = entry.payload.name ?? ''
           pendingTools.push(toolNameMap[rawName] ?? rawName)
+          if (toolNameMap[rawName] === 'Bash') {
+            pendingBashCommands.push(...extractShellCommands(entry.payload))
+          }
           continue
         }
 
@@ -259,7 +301,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             webSearchRequests: 0,
             costUSD,
             tools: pendingTools,
-            bashCommands: [],
+            bashCommands: pendingBashCommands,
             timestamp,
             speed: 'standard',
             deduplicationKey: dedupKey,
@@ -268,6 +310,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           }
 
           pendingTools = []
+          pendingBashCommands = []
           pendingUserMessage = ''
         }
       }

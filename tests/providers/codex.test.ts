@@ -16,16 +16,19 @@ afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true })
 })
 
-function sessionMeta(opts: { cwd?: string; originator?: string; session_id?: string; model?: string } = {}) {
+function sessionMeta(opts: { cwd?: string; originator?: string; id?: string; session_id?: string | null; model?: string } = {}) {
+  const payload: Record<string, string | undefined> = {
+    cwd: opts.cwd ?? '/Users/test/myproject',
+    originator: opts.originator ?? 'codex-cli',
+    model: opts.model ?? 'gpt-5.3-codex',
+  }
+  if (opts.id) payload.id = opts.id
+  if (opts.session_id !== null) payload.session_id = opts.session_id ?? 'sess-001'
+
   return JSON.stringify({
     type: 'session_meta',
     timestamp: '2026-04-14T10:00:00Z',
-    payload: {
-      cwd: opts.cwd ?? '/Users/test/myproject',
-      originator: opts.originator ?? 'codex-cli',
-      session_id: opts.session_id ?? 'sess-001',
-      model: opts.model ?? 'gpt-5.3-codex',
-    },
+    payload,
   })
 }
 
@@ -61,11 +64,15 @@ function tokenCount(opts: {
   })
 }
 
-function functionCall(name: string, timestamp?: string) {
+function functionCall(name: string, timestamp?: string, args?: Record<string, unknown>) {
   return JSON.stringify({
     type: 'response_item',
     timestamp: timestamp ?? '2026-04-14T10:00:30Z',
-    payload: { type: 'function_call', name },
+    payload: {
+      type: 'function_call',
+      name,
+      ...(args ? { arguments: JSON.stringify(args) } : {}),
+    },
   })
 }
 
@@ -84,6 +91,14 @@ function userMessage(text: string, timestamp?: string) {
 async function writeSession(dir: string, date: string, filename: string, lines: string[]) {
   const [year, month, day] = date.split('-')
   const sessionDir = join(dir, 'sessions', year!, month!, day!)
+  await mkdir(sessionDir, { recursive: true })
+  const filePath = join(sessionDir, filename)
+  await writeFile(filePath, lines.join('\n') + '\n')
+  return filePath
+}
+
+async function writeArchivedSession(dir: string, filename: string, lines: string[]) {
+  const sessionDir = join(dir, 'archived_sessions')
   await mkdir(sessionDir, { recursive: true })
   const filePath = join(sessionDir, filename)
   await writeFile(filePath, lines.join('\n') + '\n')
@@ -121,6 +136,37 @@ describe('codex provider - session discovery', () => {
     const provider = createCodexProvider(tmpDir)
     const sessions = await provider.discoverSessions()
     expect(sessions).toHaveLength(1)
+  })
+
+  it('discovers Codex App sessions with id metadata and Windows cwd', async () => {
+    await writeSession(tmpDir, '2026-04-14', 'rollout-app.jsonl', [
+      sessionMeta({
+        cwd: 'C:\\Users\\test\\myproject',
+        originator: 'Codex Desktop',
+        id: 'desktop-session-001',
+        session_id: null,
+      }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.project).toBe('Users-test-myproject')
+  })
+
+  it('discovers Codex App archived sessions', async () => {
+    await writeArchivedSession(tmpDir, 'rollout-archived.jsonl', [
+      sessionMeta({ originator: 'Codex Desktop', id: 'archived-session-001', session_id: null }),
+      tokenCount({ last: { input: 100, output: 50 }, total: { total: 150 } }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const sessions = await provider.discoverSessions()
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.path).toContain('archived_sessions')
   })
 
   it('skips files without codex session_meta', async () => {
@@ -174,6 +220,32 @@ describe('codex provider - JSONL parsing', () => {
     expect(call.sessionId).toBe('sess-parse')
     expect(call.costUSD).toBeGreaterThan(0)
     expect(call.deduplicationKey).toContain('codex:')
+  })
+
+  it('extracts Codex App session id and shell commands', async () => {
+    const filePath = await writeSession(tmpDir, '2026-04-14', 'rollout-app-parse.jsonl', [
+      sessionMeta({ id: 'desktop-session-parse', session_id: null, originator: 'Codex Desktop' }),
+      userMessage('run the checks'),
+      functionCall('shell_command', undefined, { command: 'npm test && git status' }),
+      tokenCount({
+        timestamp: '2026-04-14T10:01:00Z',
+        last: { input: 500, output: 200 },
+        total: { total: 700 },
+      }),
+    ])
+
+    const provider = createCodexProvider(tmpDir)
+    const source = { path: filePath, project: 'test', provider: 'codex' }
+    const parser = provider.createSessionParser(source, new Set())
+    const calls: ParsedProviderCall[] = []
+    for await (const call of parser.parse()) {
+      calls.push(call)
+    }
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.sessionId).toBe('desktop-session-parse')
+    expect(calls[0]!.tools).toEqual(['Bash'])
+    expect(calls[0]!.bashCommands).toEqual(['npm', 'git'])
   })
 
   it('skips duplicate token_count events', async () => {

@@ -450,6 +450,8 @@ function StatusBar({ width, showProvider }: { width: number; showProvider?: bool
       <Text>
         <Text color={ORANGE} bold>{'<'}</Text><Text color={ORANGE}>{'>'}</Text>
         <Text dimColor> switch   </Text>
+        <Text color={ORANGE} bold>r</Text>
+        <Text dimColor> refresh   </Text>
         <Text color={ORANGE} bold>q</Text>
         <Text dimColor> quit   </Text>
         <Text color={ORANGE} bold>1</Text>
@@ -554,17 +556,17 @@ function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider,
     return () => { cancelled = true }
   }, [])
 
-  const reloadData = useCallback(async (p: Period, prov: string) => {
+  const reloadData = useCallback(async (p: Period, prov: string, forceRefresh = false) => {
     setLoading(true)
     const range = getDateRange(p)
-    const data = await parseAllSessions(range, prov)
+    const data = await parseAllSessions(range, prov, forceRefresh)
     setProjects(data)
     setLoading(false)
   }, [])
 
   useEffect(() => {
     if (!refreshSeconds || refreshSeconds <= 0) return
-    const id = setInterval(() => { reloadData(period, activeProvider) }, refreshSeconds * 1000)
+    const id = setInterval(() => { reloadData(period, activeProvider, true) }, refreshSeconds * 1000)
     return () => clearInterval(id)
   }, [refreshSeconds, period, activeProvider, reloadData])
 
@@ -592,13 +594,19 @@ function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider,
       return
     }
 
+    if (input === 'r' || input === 'R') {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      reloadData(period, activeProvider, true)
+      return
+    }
+
     if (input === 'p' && multipleProviders) {
       const options = ['all', ...detectedProviders]
       const idx = options.indexOf(activeProvider)
       const next = options[(idx + 1) % options.length]
       setActiveProvider(next)
       if (debounceRef.current) clearTimeout(debounceRef.current)
-      reloadData(period, next)
+      reloadData(period, next, true)
       return
     }
 
